@@ -1,17 +1,6 @@
-import path from "path";
-import { open, type Database } from "sqlite";
+import { createClient } from '@supabase/supabase-js';
 
-let dbPromise: Promise<Database> | null = null;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-/** Opens shop.db via sqlite + sqlite3 (singleton per process). */
-export async function openDb(): Promise<Database> {
-  if (!dbPromise) {
-    const sqlite3 = (await import("sqlite3")).default;
-    const filename = path.join(process.cwd(), "shop.db");
-    dbPromise = open({
-      filename,
-      driver: sqlite3.Database,
-    });
-  }
-  return dbPromise;
-}
+export const supabase = createClient(supabaseUrl, supabaseKey);

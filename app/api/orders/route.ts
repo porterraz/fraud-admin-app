@@ -1,7 +1,10 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
-import { openDb } from "@/lib/db";
+import { supabase } from "@/lib/db";
 import type {
   CreateOrderInput,
+  OrderRow,
   OrderWithCustomerRow,
 } from "@/lib/types/database";
 
@@ -10,15 +13,89 @@ const DEVICE_TYPES = new Set(["mobile", "desktop", "tablet"]);
 
 export async function GET() {
   try {
-    const db = await openDb();
-    const orders = await db.all<OrderWithCustomerRow[]>(
-      `SELECT o.*, c.full_name AS customer_name
-       FROM orders o
-       JOIN customers c ON c.customer_id = o.customer_id
-       ORDER BY o.order_datetime DESC
-       LIMIT 50`
-    );
-    return NextResponse.json(orders);
+    const { data: orders, error: ordersError } = await supabase
+      .from("orders")
+      .select(
+        [
+          "order_id",
+          "customer_id",
+          "order_datetime",
+          "billing_zip",
+          "shipping_zip",
+          "shipping_state",
+          "payment_method",
+          "device_type",
+          "ip_country",
+          "promo_used",
+          "promo_code",
+          "order_subtotal",
+          "shipping_fee",
+          "tax_amount",
+          "order_total",
+          "risk_score",
+          "is_fraud",
+        ].join(", ")
+      )
+      .order("order_datetime", { ascending: false })
+      .limit(50);
+
+    if (ordersError) {
+      console.error("Supabase Error:", ordersError);
+      return NextResponse.json(
+        { error: "Failed to fetch orders" },
+        { status: 500 }
+      );
+    }
+
+    const list = (orders ?? []) as unknown as OrderRow[];
+    const customerIds = [...new Set(list.map((o) => o.customer_id))];
+
+    let nameByCustomerId: Record<number, string> = {};
+    if (customerIds.length > 0) {
+      const { data: customers, error: custError } = await supabase
+        .from("customers")
+        .select("customer_id, full_name")
+        .in("customer_id", customerIds);
+
+      if (custError) {
+        console.error("Supabase Error:", custError);
+        return NextResponse.json(
+          { error: "Failed to fetch orders" },
+          { status: 500 }
+        );
+      }
+
+      const custRows = (customers ?? []) as {
+        customer_id: number;
+        full_name: string;
+      }[];
+      nameByCustomerId = Object.fromEntries(
+        custRows.map((c) => [Number(c.customer_id), c.full_name])
+      );
+    }
+
+    const payload: OrderWithCustomerRow[] = list.map((o) => ({
+      order_id: Number(o.order_id),
+      customer_id: Number(o.customer_id),
+      order_datetime: String(o.order_datetime),
+      billing_zip: o.billing_zip ?? null,
+      shipping_zip: o.shipping_zip ?? null,
+      shipping_state: o.shipping_state ?? null,
+      payment_method: String(o.payment_method),
+      device_type: String(o.device_type),
+      ip_country: String(o.ip_country),
+      promo_used: Number(o.promo_used),
+      promo_code: o.promo_code ?? null,
+      order_subtotal: Number(o.order_subtotal),
+      shipping_fee: Number(o.shipping_fee),
+      tax_amount: Number(o.tax_amount),
+      order_total: Number(o.order_total),
+      risk_score: Number(o.risk_score),
+      is_fraud: Number(o.is_fraud),
+      customer_name: nameByCustomerId[Number(o.customer_id)] ?? "",
+    }));
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("Database Error:", error);
     return NextResponse.json(
@@ -89,11 +166,11 @@ export async function POST(request: Request) {
     const shipping_zip = body.shipping_zip ?? null;
     const shipping_state = body.shipping_state ?? null;
 
-    const db = await openDb();
-    const result = await db.run(
-      `INSERT INTO orders (
+    const { data: inserted, error } = await supabase
+      .from("orders")
+      .insert({
         customer_id,
-        order_datetime,
+        order_datetime: new Date().toISOString(),
         billing_zip,
         shipping_zip,
         shipping_state,
@@ -106,38 +183,23 @@ export async function POST(request: Request) {
         shipping_fee,
         tax_amount,
         order_total,
-        risk_score,
-        is_fraud
-      ) VALUES (
-        ?,
-        datetime('now'),
-        ?, ?, ?,
-        ?, ?, ?,
-        ?, ?,
-        ?, ?, ?, ?,
-        0,
-        0
-      )`,
-      [
-        customer_id,
-        billing_zip,
-        shipping_zip,
-        shipping_state,
-        payment_method,
-        device_type,
-        ip_country,
-        promo_used,
-        promo_code,
-        order_subtotal,
-        shipping_fee,
-        tax_amount,
-        order_total,
-      ]
-    );
+        risk_score: 0,
+        is_fraud: 0,
+      })
+      .select("order_id")
+      .single();
+
+    if (error || !inserted) {
+      console.error("Supabase Error:", error);
+      return NextResponse.json(
+        { error: "Failed to save order" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      order_id: result.lastID,
+      order_id: Number((inserted as unknown as { order_id: number }).order_id),
       order_total,
     });
   } catch (error) {
